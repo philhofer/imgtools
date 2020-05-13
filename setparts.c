@@ -142,7 +142,7 @@ main(int argc, char * const* argv)
 		head = part;
 	    tail = part;
 	} else {
-	    dprintf(3, "setparts: warning: %s is zero-sized (skipping)\n", contents);
+	    dprintf(2, "setparts: warning: %s is zero-sized (skipping)\n", contents);
 	    close(dstfd);
 	    close(srcfd);
 	}
