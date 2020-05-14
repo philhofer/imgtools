@@ -2,21 +2,27 @@ CC ?= gcc
 CFLAGS ?= -Wall -pipe -O2 -ffunction-sections -fdata-sections
 LDFLAGS ?= -static-pie -Wl,--gc-sections
 
-TOOL := setparts
-VERSION ?= 0.1
+REPO := imgtools
+TOOLS := gptimage alignsize
+VERSION ?= 0.2
 
-.PHONY: all clean release
-all: $(TOOL)
+.PHONY: all clean release test
+all: $(TOOLS)
 
-setparts: setparts.c
+$(TOOLS): $(wildcard *.h)
+
+%: %.c
 	$(CC) $(CFLAGS) $(LDFLAGS) $^ -o $@
 
-install: $(TOOL)
-	$(INSTALL) -D -m 755 -t $(DESTDIR)/bin/ $(TOOL)
+install: $(TOOLS)
+	install -D -m 755 -t $(DESTDIR)/bin/ $(TOOLS)
 
-tarball: $(TOOL)-$(VERSION).tar.zst
-$(TOOL)-$(VERSION).tar.zst: $(wildcard *.c)
-	git archive --format=tar --prefix=$(TOOL)-$(VERSION)/ HEAD | zstd -c -o $@
+tarball: $(REPO)-$(VERSION).tar.zst
+$(REPO)-$(VERSION).tar.zst: $(wildcard *.c)
+	git archive --format=tar --prefix=$(REPO)-$(VERSION)/ HEAD | zstd -c -o $@
+
+test: $(TOOLS) $(wildcard test/*)
+	@for x in test/??-test*; do echo $$x; ./$$x || echo "  >>> FAIL"; done
 
 clean:
-	$(RM) $(TOOL) *.o
+	$(RM) $(TOOLS) *.o

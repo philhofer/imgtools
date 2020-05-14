@@ -1,0 +1,16 @@
+#!/bin/execlineb -P
+backtick -n img { mktemp -u img.XXXXXX }
+importas -u -i img img
+if {
+	   ./gptimage -s 1G $img { }
+}
+if {
+   backtick -n size { stat -c %s $img }
+   importas -u -i size size
+   test $size -eq 1073741824
+}
+if {
+   pipeline { sfdisk --dump $img }
+   grep -q "^label: gpt"
+}
+rm $img

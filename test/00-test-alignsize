@@ -1,0 +1,7 @@
+#!/bin/execlineb -P
+# the source is under 1MB, so we expect
+# the source aligned up to 1MB printed in sectors
+# to be 2048
+backtick size { ./alignsize -a20 -s9 alignsize.c }
+importas -u -i size size
+test $size -eq 2048

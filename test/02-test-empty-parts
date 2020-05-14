@@ -1,0 +1,28 @@
+#!/bin/execlineb -P
+backtick -n img { mktemp -u img.XXXXXX }
+backtick -n esp { mktemp -u esp.XXXXXX }
+multisubstitute {
+	    importas -i -u img img
+	    importas -i -u esp esp
+}
+if { dd if=/dev/urandom of=${esp} bs=1M count=1 }
+if {
+	   ./gptimage -s 1G $img {
+	   	      $esp U  # 100MiB ESP
+		      * L     # 922MiB empty Linux partition
+	   }
+}
+
+if {
+   backtick -n size { stat -c %s $img }
+   importas -u -i size size
+   test $size -eq 1073741824
+}
+if {
+   # test that the ESP data is what we read from /dev/urandom;
+   # we're relying on the default alignment to be 1M
+   pipeline { dd if=$img bs=1M skip=1 count=1 }
+   cmp -s $esp
+}
+if { rm $esp }
+rm $img
