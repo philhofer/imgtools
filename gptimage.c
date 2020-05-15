@@ -9,6 +9,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdbool.h>
 #include <assert.h>
 
 #include "filesize.h"
@@ -61,7 +62,7 @@ partln(int fd, struct partinfo *part)
 }
 
 static void
-sfdisk(char* disk, const char *uuid, struct partinfo *partlist)
+sfdisk(char* disk, bool dos, const char *uuid, struct partinfo *partlist)
 {
     char *argv[] = {"sfdisk", disk, "--no-tell-kernel", "--no-reread", NULL};
     int pipefd[2];
@@ -81,7 +82,7 @@ sfdisk(char* disk, const char *uuid, struct partinfo *partlist)
     }
     please(child);
     please(close(pipefd[0]));
-    please(dprintf(pipefd[1], "label: gpt\n"));
+    please(dprintf(pipefd[1], "label: %s\n", dos ? "dos" : "gpt"));
     please(dprintf(pipefd[1], "label-id: %s\n", uuid));
     while (partlist) {
 	please(partln(pipefd[1], partlist));
@@ -182,17 +183,22 @@ main(int argc, char * const* argv)
     off_t srcsz, dstsize, off, width, align;
     int srcfd, dstfd;
     char optc;
+    bool dos;
 
     /* the output ought to be deterministic, so pick a uuid: */
-    uuid = "3782C3EE-1C16-F042-82A8-D6A40FB7CFAD";
+    dos = false;
+    uuid = NULL;
     dstsize = 0;
     align = DEFAULT_ALIGN_BITS;
     off = (1ULL << align);
     /* -a = minimum partition alignment (in bits)
      * -s = force output size (in bytes or human-readable form)
      * -b = base address for first partition (in bytes or human-readable form) */
-    while ((optc = getopt(argc, argv, "+a:s:b:u:v")) != -1) {
+    while ((optc = getopt(argc, argv, "+a:s:b:u:vd")) != -1) {
 	switch (optc) {
+	case 'd':
+	    dos = true;
+	    break;
 	case 'a':
 	    align = atoi(optarg);
 	    off = alignup(off, align);
@@ -214,6 +220,8 @@ main(int argc, char * const* argv)
 	    errx(1, "unrecognized option %c", optc);
 	}
     }
+    if (!uuid)
+	uuid = dos ? "0x77777777" : "3782C3EE-1C16-F042-82A8-D6A40FB7CFAD";
 
     argc -= optind;
     argv += optind;
@@ -221,7 +229,7 @@ main(int argc, char * const* argv)
     diskname = argv[0];
     argc--; argv++;
 
-    please(dstfd = open(diskname, O_CREAT|O_EXCL|O_WRONLY|O_CLOEXEC));
+    please(dstfd = open(diskname, O_CREAT|O_EXCL|O_WRONLY|O_CLOEXEC, 0644));
 
     head = tail = NULL;
     while (argc && strcmp(argv[0], "")) {
@@ -277,7 +285,7 @@ main(int argc, char * const* argv)
     please(ftruncate(dstfd, dstsize ? dstsize : off));
 
     /* ... finally, do the actual work: */
-    sfdisk(diskname, uuid, head);
+    sfdisk(diskname, dos, uuid, head);
     while (head) {
 	if (head->srcfd >= 0)
 	    setpart(dstfd, head->srcfd, head->partoff, head->partsz);

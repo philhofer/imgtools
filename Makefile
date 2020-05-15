@@ -4,7 +4,7 @@ LDFLAGS ?= -static-pie -Wl,--gc-sections
 
 REPO := imgtools
 TOOLS := gptimage alignsize
-VERSION ?= 0.2
+VERSION ?= 0.2.1
 
 .PHONY: all clean release test
 all: $(TOOLS)

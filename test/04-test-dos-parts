@@ -1,0 +1,33 @@
+#!/bin/execlineb -P
+backtick -n img { mktemp -u img.XXXXXX }
+backtick -n rfs { mktemp -u rfs.XXXXXX }
+backtick -n esp { mktemp -u esp.XXXXXX }
+multisubstitute {
+	    importas -i -u img img
+	    importas -i -u rfs rfs
+	    importas -i -u esp esp
+}
+if { dd if=/dev/urandom of=${esp} bs=1M count=1 }
+if { dd if=/dev/urandom of=${rfs} bs=1M count=1 }
+if {
+	   ./gptimage -s 128M -d -u 0xdeadbeef $img {
+	   	      $esp U
+		      $rfs L
+		      *    L
+	   }
+}
+if {
+   # test that the ESP data is what we read from /dev/urandom;
+   # we're relying on the default alignment to be 1M
+   pipeline { dd if=$img bs=1M skip=1 count=1 }
+   cmp -s $esp
+}
+if { echo "esp ok" }
+if {
+   pipeline { dd if=$img bs=1M skip=2 count=1 }
+   cmp -s $rfs
+}
+if { echo "rsp ok" }
+if { rm $esp }
+if { rm $rfs }
+rm $img
