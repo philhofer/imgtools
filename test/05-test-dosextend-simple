@@ -1,0 +1,48 @@
+#!/bin/sh -e
+img=$(mktemp -u img.XXXXXX)
+execlineb -Pc "./gptimage -d -u 0xbeefbeef -s 8M $img { +1M L }"
+
+imgget() {
+	 sfdisk -J "$img" | jq -r "$1"
+}
+
+parts=$(imgget ".partitiontable.partitions | length")
+[ $parts -eq 1 ] || {
+  echo "got $parts parts?" >&2
+  exit 1
+}
+
+./dosextend -n2 "$img"
+
+parts=$(imgget ".partitiontable.partitions | length")
+[ $parts -eq 2 ] || {
+    echo "got $parts parts after dosextend?" >&2
+    exit 1
+}
+
+# expect p2 to start at +2M, which is sector 4096
+ok=$(imgget ".partitiontable.partitions[1].start == 4096")
+[ $ok = "true" ] || {
+    echo "p2 doesn't start at sector 4096" >&2
+    exit 1
+}
+
+disksize=$(imgget ".partitiontable.partitions[1] | (.size + .start)/2048")
+[ $disksize -eq 8 ] || {
+    echo "got last partition end at $disksize after dosextend?" >&2
+    exit 1
+}
+
+label=$(imgget ".partitiontable.id")
+[ $label = "0xbeefbeef" ] || {
+    echo "partition table id is $label ???" >&2
+    exit 1
+}
+
+# test that a second dosextend fails
+./dosextend $img 2>/dev/null && {
+    echo "second dosextend succeeded?" >&2;
+    exit 1;
+}
+
+rm $img

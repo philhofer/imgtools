@@ -1,33 +1,62 @@
-#!/bin/execlineb -P
-backtick -n img { mktemp -u img.XXXXXX }
-backtick -n rfs { mktemp -u rfs.XXXXXX }
-backtick -n esp { mktemp -u esp.XXXXXX }
-multisubstitute {
-	    importas -i -u img img
-	    importas -i -u rfs rfs
-	    importas -i -u esp esp
+#!/bin/sh -e
+
+# note: you'll need sfdisk(8) and jq(1)
+
+img=$(mktemp -u img.XXXXXX)
+rfs=$(mktemp -u rfs.XXXXXX)
+esp=$(mktemp -u esp.XXXXXX)
+
+truncate -s 3M $esp
+truncate -s 3M $rfs
+
+dd if=/dev/urandom of=${esp} bs=1M count=1 conv=notrunc
+dd if=/dev/urandom of=${esp} bs=1M count=1 seek=2 conv=notrunc
+dd if=/dev/urandom of=${rfs} bs=1M count=1 seek=1 conv=notrunc
+
+imgget() {
+	 sfdisk -J $img | jq -r "$1"
 }
-if { dd if=/dev/urandom of=${esp} bs=1M count=1 }
-if { dd if=/dev/urandom of=${rfs} bs=1M count=1 }
-if {
-	   ./gptimage -s 128M -d -u 0xdeadbeef $img {
-	   	      $esp U
-		      $rfs L
-		      *    L
-	   }
+
+execlineb -Pc "./gptimage -s 128M -d -u 0xdeadbeef $img { $esp U $rfs L * L }"
+
+label=$(imgget ".partitiontable.id")
+[ $label = "0xdeadbeef" ] || {
+    echo "bad disk label: $label" >&2
+    exit 1
 }
-if {
-   # test that the ESP data is what we read from /dev/urandom;
-   # we're relying on the default alignment to be 1M
-   pipeline { dd if=$img bs=1M skip=1 count=1 }
-   cmp -s $esp
+
+label=$(imgget ".partitiontable.label")
+[ $label = "dos" ] || {
+    echo "non-dos label: $label" >&2
+    exit 1
 }
-if { echo "esp ok" }
-if {
-   pipeline { dd if=$img bs=1M skip=2 count=1 }
-   cmp -s $rfs
+
+ok=$(imgget ".partitiontable.partitions[0].start == 2048")
+[ $ok = "true" ] || {
+    echo "bad partition table start? (ok = $ok)" >&2
+    exit 1
 }
-if { echo "rsp ok" }
-if { rm $esp }
-if { rm $rfs }
+
+ok=$(imgget ".partitiontable.partitions[1].start == 8192")
+[ $ok = "true" ] || {
+    echo "bad p2 start? (ok = $ok)" >&2
+    exit 1
+}
+
+ok=$(imgget '.partitiontable.partitions | .[0] as $p1 | .[1] as $p2 | $p1.start+$p1.size <= $p2.start')
+[ $ok = "true" ] || {
+    echo "overlapping partitions? (ok = $ok)" >&2
+    exit 1
+}
+
+(dd if=$img bs=1M skip=1 count=3 | cmp -s $esp) || {
+    echo "esp is corrupted"
+}
+
+(dd if=$img bs=1M skip=4 count=3 | cmp -s $rfs) || {
+    echo "root filesystem is corrupted"
+}
+
+rm $esp
+rm $rfs
 rm $img

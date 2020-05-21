@@ -14,6 +14,8 @@
 #include <assert.h>
 
 #include "filesize.h"
+#include "mbr.h"
+#include "part.h"
 
 #ifndef SEEK_DATA
 #define SEEK_DATA 3
@@ -43,17 +45,6 @@ alignup(off_t off, unsigned bits)
     return (off + mask) & (~mask);
 }
 
-struct partinfo;
-
-struct partinfo {
-    struct partinfo *next; /* next partition */
-    const char *kind;      /* type string (usually "L" or "U") */
-    off_t srcsz;           /* size of partition image (always <= partsz) */
-    off_t partoff;         /* start offset of partition */
-    off_t partsz;          /* size of destination partition */
-    int   srcfd;           /* source image */
-};
-
 /* write the description of 'part' (for sfdisk) to 'fd'*/
 static int
 partln(int fd, struct partinfo *part)
@@ -68,7 +59,7 @@ partln(int fd, struct partinfo *part)
 }
 
 static void
-sfdisk(char* disk, bool dos, const char *uuid, struct partinfo *partlist)
+sfdisk(char* disk, const char *uuid, struct partinfo *partlist)
 {
     char *argv[] = {"sfdisk", disk, "--no-tell-kernel", "--no-reread", NULL};
     int pipefd[2];
@@ -88,7 +79,7 @@ sfdisk(char* disk, bool dos, const char *uuid, struct partinfo *partlist)
     }
     please(child);
     please(close(pipefd[0]));
-    please(dprintf(pipefd[1], "label: %s\n", dos ? "dos" : "gpt"));
+    please(dprintf(pipefd[1], "label: %s\n", "gpt"));
     please(dprintf(pipefd[1], "label-id: %s\n", uuid));
     while (partlist) {
 	please(partln(pipefd[1], partlist));
@@ -103,6 +94,31 @@ sfdisk(char* disk, bool dos, const char *uuid, struct partinfo *partlist)
 	dprintf(2, "sfdisk exited %d; exiting\n", WEXITSTATUS(status));
 	_exit(WEXITSTATUS(status));
     }
+}
+
+static void
+dosfmt(const char *disk, const char *label, struct partinfo *lst)
+{
+    unsigned char mbr[512];
+    unsigned long sig;
+    int fd, e;
+
+    sig = strtoul(label, NULL, 0);
+    if (errno)
+	err(1, "strtoul(dos label)");
+    if (sig > 0xffffffff)
+	errx(1, "dos disk label id too large: %lu\n", sig);
+
+    memset(mbr, 0, sizeof(mbr));
+    put_le32(mbr + 440, sig);
+    please(fd = open(disk, O_WRONLY|O_CLOEXEC));
+    if ((e = mbr_write_parts(mbr, lst))) {
+	errno = -e;
+	err(1, "assembling dos parts");
+    }
+    /* TODO: mbr[...] = label; */
+    if (pwrite(fd, mbr, sizeof(mbr), 0) != 512)
+	err(1, "writing mbr");
 }
 
 const char *usagestr = \
@@ -187,7 +203,7 @@ main(int argc, char * const* argv)
     char *diskname, *contents, *kind, *uuid;
     struct partinfo *head, *tail, *part;
     off_t srcsz, dstsize, off, width, align;
-    int srcfd, dstfd;
+    int srcfd, dstfd, partnum;
     char optc;
     bool dos;
 
@@ -238,6 +254,7 @@ main(int argc, char * const* argv)
     please(dstfd = open(diskname, O_CREAT|O_EXCL|O_WRONLY|O_CLOEXEC, 0644));
 
     head = tail = NULL;
+    partnum = 1;
     while (argc && strcmp(argv[0], "")) {
 	if (argc < 2)
 	    usage();
@@ -273,6 +290,7 @@ main(int argc, char * const* argv)
 	part->srcsz = srcsz;
 	part->partoff = off;
 	part->partsz = width;
+	part->num = partnum++;
 	off += width;
 	if (tail)
 	    tail->next = part;
@@ -291,12 +309,16 @@ main(int argc, char * const* argv)
     please(ftruncate(dstfd, dstsize ? dstsize : off));
 
     /* ... finally, do the actual work: */
-    sfdisk(diskname, dos, uuid, head);
+    if (dos)
+	dosfmt(diskname, uuid, head);
+    else
+	sfdisk(diskname, uuid, head);
     while (head) {
 	if (head->srcfd >= 0)
 	    setpart(dstfd, head->srcfd, head->partoff, head->srcsz);
 	head = head->next;
     }
+    free_parts(&head);
     please(fsync(dstfd));
 
     if (!argc)

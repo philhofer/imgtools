@@ -1,18 +1,23 @@
 CC ?= gcc
-CFLAGS ?= -Wall -pipe -O2 -ffunction-sections -fdata-sections
-LDFLAGS ?= -static-pie -Wl,--gc-sections
+CFLAGS ?= -Wall -Werror -pipe -O1 -g -ffunction-sections -fdata-sections
+LDFLAGS ?= -static-pie -g -Wl,--gc-sections
 
 REPO := imgtools
-TOOLS := gptimage alignsize
-VERSION ?= 0.2.2
+TOOLS := gptimage alignsize dosextend
+VERSION ?= 0.2.3
 
 .PHONY: all clean release test
 all: $(TOOLS)
 
-$(TOOLS): $(wildcard *.h)
+gptimage: gptimage.o mbr.o part.o
+alignsize: alignsize.o
+dosextend: dosextend.o mbr.o part.o
 
-%: %.c
-	$(CC) $(CFLAGS) $(LDFLAGS) $^ -o $@
+%.o: %.c $(wildcard *.h)
+	$(CC) -c $(CFLAGS) $< -o $@
+
+%: %.o
+	$(CC) $(LDFLAGS) $^ -o $@
 
 install: $(TOOLS)
 	install -D -m 755 -t $(DESTDIR)/bin/ $(TOOLS)

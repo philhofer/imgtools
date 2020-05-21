@@ -1,3 +1,5 @@
+#ifndef __FILESIZE_H_
+#define __FILESIZE_H_
 #include <unistd.h>
 #include <err.h>
 #include <fcntl.h>
@@ -33,3 +35,5 @@ getsize(const char *path)
   close(fd);
   return out;
 }
+
+#endif
