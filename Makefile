@@ -4,7 +4,7 @@ LDFLAGS ?= -static-pie -Wl,--gc-sections
 
 REPO := imgtools
 TOOLS := gptimage alignsize
-VERSION ?= 0.2.1
+VERSION ?= 0.2.2
 
 .PHONY: all clean release test
 all: $(TOOLS)
@@ -22,7 +22,7 @@ $(REPO)-$(VERSION).tar.zst: $(wildcard *.c)
 	git archive --format=tar --prefix=$(REPO)-$(VERSION)/ HEAD | zstd -c -o $@
 
 test: $(TOOLS) $(wildcard test/*)
-	@for x in test/??-test*; do echo $$x; ./$$x || echo "  >>> FAIL"; done
+	@for x in test/??-test*; do echo $$x; ./$$x >/dev/null || exit 1; done
 
 clean:
 	$(RM) $(TOOLS) *.o

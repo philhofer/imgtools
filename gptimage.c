@@ -1,4 +1,5 @@
 #define _GNU_SOURCE
+#define _FILE_OFFSET_BITS 64
 #include <unistd.h>
 #include <errno.h>
 #include <sys/stat.h>
@@ -26,6 +27,11 @@
 #define DEFAULT_SECTOR_BITS 9 /* 512B */
 
 #define please(expr) do { if ((expr) < 0) err(1, #expr); } while(0)
+
+/* C11 compilers ought to support static_assert() */
+#ifdef static_assert
+static_assert(sizeof(loff_t) == sizeof(off_t));
+#endif
 
 static int
 verbose = 0;
@@ -153,24 +159,24 @@ parse_size(const char *text)
 static void
 setpart(int dstfd, int srcfd, off_t dstoff, off_t width)
 {
-    off_t srcoff, srcend;
+    loff_t srcoff, srcend, shift;
 
     /* find a section of data within srcfd
      * and copy just that section via copy_file_range(2) */
     srcoff = 0;
+    shift = dstoff;
     while (srcoff < width) {	
-	srcoff = lseek(srcfd, srcoff, SEEK_DATA);
+	srcoff = lseek(srcfd, (off_t)srcoff, SEEK_DATA);
 	if (srcoff < 0) {
-	    /* ENXIO is returned when srcoff is inside a hole
-	     * at the end of the file, which happens
-	     * if the whole file is unallocated */
 	    if (errno == ENXIO)
-		return;
-	    err(1, "lseek(%d, %llu, SEEK_DATA)", srcfd, (unsigned long long)srcoff);
+		return; /* inside a hole at the end of the file */
+	    err(1, "lseek(SEEK_DATA)");
 	}
-	if (srcoff >= width)
+	if (srcoff == width)
 	    break;
-	please(srcend = lseek(srcfd, srcoff, SEEK_HOLE));
+	assert(srcoff < width);
+	please(srcend = lseek(srcfd, (off_t)srcoff, SEEK_HOLE));
+	dstoff = srcoff + shift;
 	please(copy_file_range(srcfd, &srcoff, dstfd, &dstoff, (size_t)(srcend - srcoff), 0));
     }
 }
@@ -288,7 +294,7 @@ main(int argc, char * const* argv)
     sfdisk(diskname, dos, uuid, head);
     while (head) {
 	if (head->srcfd >= 0)
-	    setpart(dstfd, head->srcfd, head->partoff, head->partsz);
+	    setpart(dstfd, head->srcfd, head->partoff, head->srcsz);
 	head = head->next;
     }
     please(fsync(dstfd));
