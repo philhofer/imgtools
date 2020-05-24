@@ -21,17 +21,23 @@ usage(void)
 int
 main(int argc, char **argv)
 {
+    long long start, length;
     unsigned char mbr[512];
     const char *disk;
+    bool tellkernel;
     off_t disksize;
     int fd, part;
     char c;
 
+    tellkernel = false;
     part = -1;
-    while ((c = getopt(argc, argv, "+n:")) != -1) {
+    while ((c = getopt(argc, argv, "+n:k")) != -1) {
 	switch (c) {
 	case 'n':
 	    part = atoi(optarg);
+	    break;
+	case 'k':
+	    tellkernel = true;
 	    break;
 	default:
 	    usage();
@@ -49,10 +55,14 @@ main(int argc, char **argv)
     if (pread(fd, mbr, 512, 0) != 512)
 	err(1, "pread(%s)", disk);
 
-    if (mbr_add_lastpart(mbr, part, disksize >> 9) < 0)
+    if ((part = mbr_add_lastpart(mbr, part, disksize >> 9, &start, &length)) < 0)
 	err(1, "adding partition");
-  
+
     if (pwrite(fd, mbr, 512, 0) != 512)
 	err(1, "pwrite(%s)", disk);
+
+    if (tellkernel && kernel_add_part(fd, part, start, length))
+	err(1, "couldn't update kernel partition table");
+    close(fd);
     return 0;
 }

@@ -386,7 +386,7 @@ gpt_write_parts(int fd, struct partinfo *parts, const char *diskguid, int64_t se
 static const unsigned char zeroguid[16];
 
 int
-gpt_add_lastpart(int fd, int num, int64_t disksectors)
+gpt_add_lastpart(int fd, int num, int64_t disksectors, long long *start, long long *length)
 {
     unsigned char header[GPT_RESERVE + 512];
     unsigned char trailer[GPT_RESERVE];
@@ -493,6 +493,10 @@ gpt_add_lastpart(int fd, int num, int64_t disksectors)
     spec.num = pfree+1;
     if (spec.nsectors < 2048)
 	warnf("gpt: warning: last partition is very small (%lli sectors)\n", spec.nsectors);
+    if (start)
+	*start = lba << 9;
+    if (length)
+	*length = spec.nsectors << 9;
 
     /* now actually do the modification */
     if (getf64(gpt, otherlba) != blba)
@@ -515,5 +519,5 @@ gpt_add_lastpart(int fd, int num, int64_t disksectors)
 	return -1;
     if (pwrite(fd, trailer, sizeof(trailer), (disksectors<<9)-sizeof(trailer)) != sizeof(trailer))
 	return -1;
-    return 0;
+    return spec.num;
 }

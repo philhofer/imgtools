@@ -31,7 +31,8 @@ get_le32(const unsigned char *src)
  * partitions already active 
  *
  * BUGS: currently ignores EBR parts */
-int mbr_add_lastpart(unsigned char *mbr, int part, int64_t numlbas);
+int mbr_add_lastpart(unsigned char *mbr, int part, int64_t numlbas,
+		     long long *start, long long *length);
 
 /* mbr_write_parts() writes a list of partitions
  * to mbr as a DOS partition table; it leaves all but

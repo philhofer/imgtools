@@ -3,6 +3,43 @@
 #include <errno.h>
 #include "part.h"
 
+#ifdef __linux__
+#include <sys/ioctl.h>
+#define BLKPG_ADD_PARTITION 1
+int
+kernel_add_part(int fd, int pnum, long long start, long long length)
+{
+    struct {
+	int op;
+	int flags;
+	int datalen;
+	void *data;
+    } arg = {0};
+    struct {
+	long long start;
+	long long length;
+	int pno;
+	char devname[64];
+	char volname[64];
+    } part = {0};
+
+    part.pno = pnum;
+    part.start = start;
+    part.length = length;
+    arg.op = BLKPG_ADD_PARTITION;
+    arg.datalen = sizeof(part);
+    arg.data = (void *)&part;
+    return ioctl(fd, _IO(0x12, 105), &arg);
+}
+#else
+int
+kernel_add_part(int fd, int pnum, long long start, long long length)
+{
+    errno = EOPNOTSUPP;
+    return -1;
+}
+#endif
+
 static inline bool
 overlap(const struct partinfo *low, struct partinfo *hi)
 {

@@ -1,5 +1,5 @@
 CC ?= gcc
-CFLAGS ?= -Wall -Werror -pipe -O1 -g -ffunction-sections -fdata-sections
+CFLAGS ?= -Wall -Werror -pipe -O2 -g -ffunction-sections -fdata-sections
 LDFLAGS ?= -static-pie -g -Wl,--gc-sections
 
 # you should probably not override these:
@@ -7,7 +7,7 @@ EXTRA_CFLAGS = -fwrapv
 
 REPO := imgtools
 TOOLS := gptimage alignsize dosextend gptextend
-VERSION ?= 0.2.5
+VERSION ?= 0.3.0
 
 .PHONY: all clean release test
 all: $(TOOLS)

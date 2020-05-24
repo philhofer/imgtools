@@ -172,11 +172,11 @@ setpart(int dstfd, int srcfd, off_t dstoff, off_t width)
 int
 main(int argc, char * const* argv)
 {
+    int64_t lba, nsectors, disksectors, trailersectors;
     char *diskname, *contents, *kind, *uuid;
     struct partinfo *head, *tail, *part;
-    off_t srcsz, align;
-    int64_t lba, nsectors, disksectors, trailersectors;
     int srcfd, dstfd, partnum;
+    off_t srcsz, align;
     char optc;
     bool dos;
 
@@ -189,7 +189,7 @@ main(int argc, char * const* argv)
     /* -a = minimum partition alignment (in bits)
      * -s = force output size (in bytes or human-readable form)
      * -b = base address for first partition (in bytes or human-readable form) */
-    while ((optc = getopt(argc, argv, "+a:s:b:u:vd")) != -1) {
+    while ((optc = getopt(argc, argv, "+a:s:b:u:vdh")) != -1) {
 	switch (optc) {
 	case 'd':
 	    dos = true;
@@ -214,6 +214,9 @@ main(int argc, char * const* argv)
 	    break;
 	case 'v':
 	    verbose = 1;
+	    break;
+	case 'h':
+	    usage();
 	    break;
 	default:
 	    errx(1, "unrecognized option %c", optc);
@@ -307,6 +310,7 @@ main(int argc, char * const* argv)
 	head = head->next;
     }
     free_parts(&head);
+    close(dstfd);
 
     if (!argc)
 	return 0;

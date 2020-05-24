@@ -143,7 +143,7 @@ read_mbr_partitions(unsigned char *mbr, int *nparts)
 }
 
 int
-mbr_add_lastpart(unsigned char *mbr, int num, int64_t nlbas)
+mbr_add_lastpart(unsigned char *mbr, int num, int64_t nlbas, long long *start, long long *length)
 {
     struct partinfo *parts, *tail = NULL;
     int64_t lba, sectors;
@@ -191,9 +191,15 @@ mbr_add_lastpart(unsigned char *mbr, int num, int64_t nlbas)
     tail->dc = 0x83;
     tail->num = num;
     err = 0;
-    if (mbr_write_parts(mbr, parts) < 0)
+    if (mbr_write_parts(mbr, parts) < 0) {
 	err = errno;
+    } else {
+	if (start)
+	    *start = lba << 9;
+	if (length)
+	    *length = sectors << 9;
+    }
 done:
     free_parts(&parts);
-    return err ? rc(err) : 0;
+    return err ? rc(err) : num;
 }

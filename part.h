@@ -25,9 +25,9 @@ struct partinfo {
 static inline struct partinfo *
 last_part(struct partinfo *head)
 {
-	while (head->next)
-		head = head->next;
-	return head;
+    while (head->next)
+	head = head->next;
+    return head;
 }
 
 static inline void
@@ -38,7 +38,10 @@ free_parts(struct partinfo **head)
     if ((*head)->next)
 	free_parts(&(*head)->next);
     free(*head);
+    *head = NULL;
 }
+
+int kernel_add_part(int fd, int pnum, long long start, long long length);
 
 /* check_parts() checks a list of partitions
  * for sanity and returns a (negative) error
