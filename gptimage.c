@@ -38,12 +38,31 @@ static_assert(sizeof(loff_t) == sizeof(off_t));
 
 static int verbose = 0;
 
+/* take a byte width 'w' and return
+ * its width in lbas, taking care to
+ * align the returned number of lbas to 'bits',
+ * where bits is at least 9 (one sector) */
+static int64_t
+lba_align(off_t w, int bits)
+{
+    assert(bits >= 9);
+    return alignup((w+511)>>9, bits-9);
+}
+
+static off_t
+sectoff(int64_t lba)
+{
+    off_t b = lba << 9;
+    if (b < lba)
+	errx(1, "lba %lli overflows off_t", lba);
+    return b;
+}
+
 static void
 dosfmt(int fd, const char *label, struct partinfo *lst)
 {
     unsigned char mbr[512];
     unsigned long sig;
-    int e;
 
     sig = strtoul(label, NULL, 0);
     if (errno)
@@ -53,23 +72,18 @@ dosfmt(int fd, const char *label, struct partinfo *lst)
 
     memset(mbr, 0, sizeof(mbr));
     put_le32(mbr + 440, sig);
-    if ((e = mbr_write_parts(mbr, lst))) {
-	errno = -e;
+    if (mbr_write_parts(mbr, lst) < 0)
 	err(1, "assembling dos parts");
-    }
-    /* TODO: mbr[...] = label; */
+
     if (pwrite(fd, mbr, sizeof(mbr), 0) != 512)
 	err(1, "writing mbr");
 }
 
 static void
-gptfmt(int fd, const char *uuid, struct partinfo *lst, off_t disksize)
+gptfmt(int fd, const char *uuid, struct partinfo *lst, int64_t sectors)
 {
-    int rc = gpt_write_parts(fd, lst, uuid, disksize);
-    if (rc < 0) {
-	errno = rc;
+    if (gpt_write_parts(fd, lst, uuid, sectors) < 0)
 	err(1, "creating GPT");
-    }
 }
 
 const char *usagestr = \
@@ -116,7 +130,7 @@ parse_size(const char *text)
     if (errno)
 	err(1, "strtoull(%s)", text);
     if (out < 0)
-	errx(1, "negative size? %ll", out);
+	errx(1, "negative size? %lli", out);
     if (!*end)
 	return (off_t)out;
     if (*end && !*(end+1)) {
@@ -160,7 +174,8 @@ main(int argc, char * const* argv)
 {
     char *diskname, *contents, *kind, *uuid;
     struct partinfo *head, *tail, *part;
-    off_t srcsz, dstsize, off, width, align, trailer;
+    off_t srcsz, align;
+    int64_t lba, nsectors, disksectors, trailersectors;
     int srcfd, dstfd, partnum;
     char optc;
     bool dos;
@@ -168,9 +183,9 @@ main(int argc, char * const* argv)
     /* the output ought to be deterministic, so pick a uuid: */
     dos = false;
     uuid = NULL;
-    dstsize = 0;
+    disksectors = 0;
     align = DEFAULT_ALIGN_BITS;
-    off = (1ULL << align);
+    lba = lba_align(1, DEFAULT_ALIGN_BITS);
     /* -a = minimum partition alignment (in bits)
      * -s = force output size (in bytes or human-readable form)
      * -b = base address for first partition (in bytes or human-readable form) */
@@ -181,14 +196,18 @@ main(int argc, char * const* argv)
 	    break;
 	case 'a':
 	    align = atoi(optarg);
-	    off = alignup(off, align);
-	    dstsize = alignup(dstsize, align);
+	    if (align < 9)
+		errx(1, "alignment %d below minimum alignment %d\n", align, 9);
+	    if (align < 20)
+		warnf("warning: alignment %d below recommended of %d\n", align, 20);
+	    lba = alignup(lba, align-9);
+	    disksectors = alignup(disksectors, align-9);
 	    break;
 	case 's':
-	    dstsize = alignup(parse_size(optarg), align);
+	    disksectors = lba_align(parse_size(optarg), align);
 	    break;
 	case 'b':
-	    off = alignup(parse_size(optarg), align);	    
+	    lba = lba_align(parse_size(optarg), align);
 	    break;
 	case 'u':
 	    uuid = optarg;
@@ -204,7 +223,7 @@ main(int argc, char * const* argv)
 	uuid = dos ? "0x77777777" : "3782C3EE-1C16-F042-82A8-D6A40FB7CFAD";
 
     /* we may need to reserve space at the end of the disk */
-    trailer = dos ? 0 : GPT_RESERVE;
+    trailersectors = dos ? 0 : GPT_RESERVE_LBAS;
 
     argc -= optind;
     argv += optind;
@@ -228,31 +247,32 @@ main(int argc, char * const* argv)
 	if (strcmp(contents, "*") == 0) {
 	    /* empty partiton; wildcard size */
 	    srcfd = -1;
-	    if (!dstsize)
+	    if (!disksectors)
 		errx(1, "cannot use wildcard part size without -s <size> flag");
-	    if (off >= dstsize-trailer)
+	    if (lba >= disksectors-trailersectors)
 		errx(1, "no space remaining for wildcard partition");
-	    width = srcsz = dstsize - off - trailer;
+	    nsectors = disksectors - trailersectors - lba;
+	    srcsz = sectoff(disksectors - trailersectors - lba);
 	} else if (contents[0] == '+') {
 	    /* empty partition; fixed size */
 	    srcfd = -1;
-	    width = srcsz = alignup(parse_size(++contents), align);
+	    srcsz = parse_size(++contents);
+	    nsectors = lba_align(srcsz, align);
 	} else {
 	    please(srcfd = open(contents, O_RDONLY|O_CLOEXEC));
 	    srcsz = fgetsize(srcfd);
-	    if (srcsz == 0)
-		errx(1, "can't determine size of %s", contents);
-	    width = alignup(srcsz, align);
+	    nsectors = lba_align(srcsz, align);
 	}
 
 	part = calloc(1, sizeof(struct partinfo));
 	part->kind = kind;
 	part->srcfd = srcfd;
 	part->srcsz = srcsz;
-	part->partoff = off;
-	part->partsz = width;
+	part->startlba = lba;
+	part->nsectors = nsectors;
 	part->num = partnum++;
-	off += width;
+	lba += nsectors;
+	warnf("p%d %lli %lli\n", part->num, part->startlba, part->nsectors);
 	if (tail)
 	    tail->next = part;
 	else
@@ -263,27 +283,27 @@ main(int argc, char * const* argv)
 	usage();
 
     /* now we know the full size of the image: */
-    if (!dos)
-	off += GPT_RESERVE;
-    
-    off = alignup(off, align);
-    /* XXX will likely be optimized away unless compiled with -fwrapv */
-    if (off < 0)
-	errx(1, "size (off_t) overflow");
+    lba += trailersectors;
+    lba = alignup(lba, align-9);
 
-    if (dstsize && off > dstsize)
-	errx(1, "images do not fit in size %llu", (unsigned long long)dstsize);
+    if (lba < 0)
+	errx(1, "lba %lli (overflow somewhere?)", lba);
+    if (!disksectors)
+	disksectors = lba;
+    else if (lba > disksectors)
+	errx(1, "images (%lli sectors) do not fit in %lli sectors",
+	     (long long)lba, (long long)disksectors);
 
-    please(ftruncate(dstfd, dstsize ? dstsize : off));
+    please(ftruncate(dstfd, sectoff(disksectors)));
 
     /* ... finally, do the actual work: */
     if (dos)
 	dosfmt(dstfd, uuid, head);
     else
-	gptfmt(dstfd, uuid, head, dstsize ? dstsize : off);
+	gptfmt(dstfd, uuid, head, disksectors);
     while (head) {
 	if (head->srcfd >= 0)
-	    setpart(dstfd, head->srcfd, head->partoff, head->srcsz);
+	    setpart(dstfd, head->srcfd, sectoff(head->startlba), head->srcsz);
 	head = head->next;
     }
     free_parts(&head);

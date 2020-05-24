@@ -50,7 +50,7 @@ label=$(imgget ".partitiontable.id")
 
 # test that a second gptextend fails
 ./gptextend $img 2>/dev/null && {
-    echo "second dosextend succeeded?" >&2;
+    echo "second gptextend succeeded?" >&2;
     exit 1;
 }
 

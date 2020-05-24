@@ -23,7 +23,7 @@ main(int argc, char **argv)
 {
     const char *disk;
     off_t disksize;
-    int fd, part, rc;
+    int fd, part;
     char c;
 
     part = -1;
@@ -45,10 +45,11 @@ main(int argc, char **argv)
     if (fd < 0)
 	err(1, "open %s", disk);
     disksize = fgetsize(fd);
+    if (!disksize)
+	err(1, "computing disk size");
 
-    if ((rc = gpt_add_lastpart(fd, part, disksize)) < 0) {
-	errno = -rc;
+    if (gpt_add_lastpart(fd, part, disksize>>9) < 0)
 	err(1, "adding partition");
-    }
+
     return 0;
 }

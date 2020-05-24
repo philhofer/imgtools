@@ -1,16 +1,22 @@
-#!/bin/execlineb -P
-backtick -n img { mktemp -u img.XXXXXX }
-importas -u -i img img
-if {
-	   ./gptimage -d -s 1G $img { }
+#!/bin/sh -e
+img=$(mktemp -u img.XXXXXX)
+execlineb -Pc "./gptimage -d -s 1G $img { }"
+
+[ $(stat -c %s $img) -eq 1073741824 ] || {
+    echo "unexpected size" >&2
+    exit 1
 }
-if {
-   backtick -n size { stat -c %s $img }
-   importas -u -i size size
-   test $size -eq 1073741824
+
+(sfdisk --dump $img | grep -q "^label: dos") || {
+    echo "sfdisk didn't find a dos label" >&2
+    exit 1
 }
-if {
-   pipeline { sfdisk --dump $img }
-   grep -q "^label: dos"
+
+./dosextend -n1 $img
+
+[ $(stat -c %s $img) -eq 1073741824 ] || {
+    echo "changed size after dosextend" >&2
+    exit 1
 }
+
 rm $img

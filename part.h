@@ -13,9 +13,9 @@ struct partinfo;
 struct partinfo {
     struct partinfo *next; /* next partition */    
     const char *kind;      /* type string (usually "L" or "U"); corresponds to EFI type */
-    off_t srcsz;           /* size of partition image (always <= partsz) */
-    off_t partoff;         /* start offset of partition */
-    off_t partsz;          /* size of destination partition */
+    off_t   srcsz;         /* size of partition image (always <= partsz) */
+    int64_t startlba;      /* starting LBA */
+    int64_t nsectors;      /* size in sectors */
     int   srcfd;           /* source image */
     int   num;             /* partition number (only valid if !hidden) */
     uint8_t dc;            /* dos partition type; only used for DOS partition tables */
@@ -43,6 +43,6 @@ free_parts(struct partinfo **head)
 /* check_parts() checks a list of partitions
  * for sanity and returns a (negative) error
  * if something looks wrong */
-int check_parts(const struct partinfo *head, off_t limit);
+int check_parts(const struct partinfo *head, int64_t nlbas);
 
 #endif

@@ -8,10 +8,11 @@
 
 #define MBR_PART1_OFFSET 446
 
+#define rc(e) (errno=(e), -1)
+
 static int
 mbr_entry(unsigned char *desc, struct partinfo *info)
 {
-    off_t startsect, numsect;
 
     assert(!info->hidden);
     assert(info->num > 0 && info->num <= 4);
@@ -38,15 +39,13 @@ mbr_entry(unsigned char *desc, struct partinfo *info)
     desc[6] = 0xff;
     desc[7] = 0xff;
 
-    startsect = info->partoff>>9;
-    if (startsect>>32)
-	return -ERANGE;
-    numsect = info->partsz>>9;
-    if (numsect>>32)
-	return -ERANGE;
+    if (info->startlba > 0xffffffff || info->startlba < 1)
+	return rc(ERANGE);
+    if (info->nsectors > 0xffffffff || info->nsectors < 0)
+	return rc(ERANGE);
 
-    put_le32(desc + 8, (uint32_t)startsect);
-    put_le32(desc + 12, (uint32_t)numsect);
+    put_le32(desc + 8, (uint32_t)info->startlba);
+    put_le32(desc + 12, (uint32_t)info->nsectors);
     return 0;
 }
 
@@ -63,18 +62,18 @@ mbr_write_parts(unsigned char *mbr, struct partinfo *parts)
 	    continue;
 	if (head->num > 4 || head->num <= 0) {
 	    warnf("partition %d not valid for DOS\n", head->num);
-	    return -EINVAL;
+	    return rc(EINVAL);
         }
 	if (head->next && head->num >= head->next->num) {
 	    warnf("bailing: part %d comes before %d\n", head->num, head->next->num);
-	    return -EINVAL;
+	    return rc(EINVAL);
         }
 	nrp++;
     }
 
     if (nrp > 4) {
 	warnf("can't write %d partitions to DOS\n", nrp);
-	return -EINVAL;
+	return rc(EINVAL);
     }
     err = 0;
     nrp = 0;
@@ -124,12 +123,12 @@ read_mbr_partitions(unsigned char *mbr, int *nparts)
 	    break;
 	}
 	part = calloc(sizeof(struct partinfo), 1);
-	part->partoff = ((off_t)get_le32(desc + 8))<<9;
-	part->partsz = ((off_t)get_le32(desc + 12))<<9;
+	part->startlba = (int64_t)get_le32(desc + 8);
+	part->nsectors = (int64_t)get_le32(desc + 12);
 	part->kind = kind;
 	part->dc = desc[4];
 	part->num = i+1;
-	if (part->partoff == 0 || part->partsz == 0)
+	if (part->startlba == 0 || part->nsectors == 0)
 	    warnf("warning: partition %d might only use CHS addressing\n", i+1);
 	if (tail)
 	    tail->next = part;
@@ -138,59 +137,63 @@ read_mbr_partitions(unsigned char *mbr, int *nparts)
 	tail = part;
 	np++;
     }
+    errno = 0;
     *nparts = np;
     return head;
 }
 
 int
-mbr_add_lastpart(unsigned char *mbr, int num, off_t disksize)
+mbr_add_lastpart(unsigned char *mbr, int num, int64_t nlbas)
 {
-    struct partinfo *parts, *part;
-    off_t start, size;
-    int err, nparts;
+    struct partinfo *parts, *tail = NULL;
+    int64_t lba, sectors;
+    int err, nparts = 0;
 
     parts = read_mbr_partitions(mbr, &nparts);
-    if (parts == NULL || nparts == 0) {
-	err = -EINVAL;
-	goto done;
-    }
+    if (parts == NULL && errno)
+	return rc(errno);
     if (nparts == 4) {
-	err = -ENOSPC;
+	err = ENOSPC;
 	goto done;
     }
     if (num > 0 && nparts+1 != num) {
 	warnf("cannot set part %d; %d partitions present\n", num, nparts);
-	err = -EINVAL;
+	err = EINVAL;
 	goto done;
     }
     num = nparts+1;
 
-    if ((err = check_parts(parts, disksize)))
+    if ((err = check_parts(parts, nlbas)))
 	goto done;
 
-    part = last_part(parts);
-    start = part->partoff + part->partsz;
-    if (start >= disksize) {
-	warnf("last partition start %llu won't fit in disk\n", (unsigned long long)start);
-	err = -ENOSPC;
+    if (parts) {
+	tail = last_part(parts);
+	lba = tail->startlba + tail->nsectors;
+    } else {
+	/* TODO: select first lba from user-chosen alignment */
+	lba = 2048;
+    }
+
+    if (lba >= nlbas) {
+	warnf("last partition start %ll won't fit in disk\n", (long long)lba);
+	err = ENOSPC;
 	goto done;
     }
-    size = disksize - start;
-    if (size < (1L << 20)) {
-	warnf("final partition size %llu is less than minimum alignment (1M)\n",
-	      (unsigned long long)size);
-	err = -ENOSPC;
-	goto done;
-    }
-    part->next = calloc(sizeof(struct partinfo), 1);
-    part = part->next;
-    part->kind = "L";
-    part->partoff = start;
-    part->partsz = size;
-    part->dc = 0x83;
-    part->num = num;
-    err = mbr_write_parts(mbr, parts);
+    sectors = nlbas - lba;
+    tail = calloc(sizeof(struct partinfo), 1);
+    if (parts)
+	last_part(parts)->next = tail;
+    else
+	parts = tail;
+    tail->kind = "L";
+    tail->startlba = lba;
+    tail->nsectors = sectors;
+    tail->dc = 0x83;
+    tail->num = num;
+    err = 0;
+    if (mbr_write_parts(mbr, parts) < 0)
+	err = errno;
 done:
     free_parts(&parts);
-    return err;
+    return err ? rc(err) : 0;
 }

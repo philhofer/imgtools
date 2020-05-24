@@ -6,14 +6,14 @@
 static inline bool
 overlap(const struct partinfo *low, struct partinfo *hi)
 {
-    return low->partoff >= hi->partoff ||
-	low->partoff + low->partsz > hi->partoff;
+    return low->startlba >= hi->startlba ||
+	low->startlba + low->nsectors > hi->startlba;
 }
 
 static inline bool
-fits(const struct partinfo *part, off_t limit)
+fits(const struct partinfo *part, int64_t nlbas)
 {
-    return part->partoff+part->partsz <= limit;
+    return part->startlba+part->nsectors <= nlbas;
 }
 
 static void
@@ -21,15 +21,15 @@ dump_parts(const struct partinfo *head)
 {
     while (head) {
 	if (head->hidden)
-	    warnf("reserved: %llu + %llu %s\n", head->partoff, head->partsz, head->kind);
+	    warnf("reserved: %ll + %ll %s\n", head->startlba, head->nsectors, head->kind);
 	else
-	    warnf("p%d: %llu + %llu %s\n", head->num, head->partoff, head->partsz, head->kind);
+	    warnf("p%d: %ll + %ll %s\n", head->num, head->startlba, head->nsectors, head->kind);
 	head = head->next;
     }
 }
 
 int
-check_parts(const struct partinfo *head, off_t limit)
+check_parts(const struct partinfo *head, int64_t nlbas)
 {
     const struct partinfo *p, *n;
     int i, err = 0;
@@ -37,8 +37,8 @@ check_parts(const struct partinfo *head, off_t limit)
     i = 1;
     p = head;
     for (p = head; p; p = p->next) {	
-	if (!fits(p, limit)) {
-	    warnf("partition %d doesn't fit in %llu\n", p->num, p->num+1, (unsigned long long)limit);
+	if (!fits(p, nlbas)) {
+	    warnf("partition %d doesn't fit in %ll\n", p->num, p->num+1, (long long)nlbas);
 	    err = -EINVAL;
 	}
 	if (p->next && overlap(p, p->next)) {

@@ -24,7 +24,7 @@ main(int argc, char **argv)
     unsigned char mbr[512];
     const char *disk;
     off_t disksize;
-    int fd, part, rc;
+    int fd, part;
     char c;
 
     part = -1;
@@ -49,10 +49,8 @@ main(int argc, char **argv)
     if (pread(fd, mbr, 512, 0) != 512)
 	err(1, "pread(%s)", disk);
 
-    if ((rc = mbr_add_lastpart(mbr, part, disksize)) < 0) {
-	errno = -rc;
+    if (mbr_add_lastpart(mbr, part, disksize >> 9) < 0)
 	err(1, "adding partition");
-    }
   
     if (pwrite(fd, mbr, 512, 0) != 512)
 	err(1, "pwrite(%s)", disk);

@@ -31,6 +31,6 @@ get_le64(const unsigned char *src)
     return s;
 }
 
-int gpt_add_lastpart(int fd, int num, off_t disksize);
+int gpt_add_lastpart(int fd, int num, int64_t numlbas);
 
-int gpt_write_parts(int fd, struct partinfo *parts, const char *diskuuid, off_t disksize);
+int gpt_write_parts(int fd, struct partinfo *parts, const char *diskuuid, int64_t numlbas);

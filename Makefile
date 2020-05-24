@@ -7,7 +7,7 @@ EXTRA_CFLAGS = -fwrapv
 
 REPO := imgtools
 TOOLS := gptimage alignsize dosextend gptextend
-VERSION ?= 0.2.4
+VERSION ?= 0.2.5
 
 .PHONY: all clean release test
 all: $(TOOLS)

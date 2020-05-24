@@ -28,6 +28,8 @@
 #define setf64(mem, name, val) \
     put_le64((mem) + __ ## name ## _offset64, val)
 
+#define rc(e) (errno=(e), -1)
+
 /* commonly-accessed GPT header fields: */
 #define __hdrsize_offset32   12    /* header size (should be >= 92) */
 #define __hdrcrc_offset32    16    /* crc of header */
@@ -80,47 +82,47 @@ encode_guid(unsigned char *dst, const char *src)
     int j = 0, i = 0;
 
     if (strnlen(src, 37) != 36)
-	return -EINVAL;
+	return rc(EINVAL);
     /* first 4-byte word: little-endian */
     j = 3;
     while (i < 8) {
 	if (xb(&dst[j--], &src[i]))
-	    return -EINVAL;
+	    return rc(EINVAL);
 	i += 2;
     }
     if (src[i++] != '-')
-	return -EINVAL;
+	return rc(EINVAL);
     /* second 2-byte word: little-endian */
     j = 5;
     while (i < 13) {
 	if (xb(&dst[j--], &src[i]))
-	    return -EINVAL;
+	    return rc(EINVAL);
 	i += 2;
     }
     if (src[i++] != '-')
-	return -EINVAL;
+	return rc(EINVAL);
     /* third 2-byte word: little-endian */
     j = 7;
     while (i < 18) {
 	if (xb(&dst[j--], &src[i]))
-	    return -EINVAL;
+	    return rc(EINVAL);
 	i += 2;
     }
     if (src[i++] != '-')
-	return -EINVAL;
+	return rc(EINVAL);
     /* fourth 2-byte word: big-endian */
     j = 8;
     while (i < 23) {
 	if (xb(&dst[j++], &src[i]))
-	    return -EINVAL;
+	    return rc(EINVAL);
 	i += 2;
     }
     if (src[i++] != '-')
-	return -EINVAL;
+	return rc(EINVAL);
     /* fifth 8-byte word: big-endian */
     while (i < 36) {
 	if (xb(&dst[j++], &src[i]))
-	    return -EINVAL;
+	    return rc(EINVAL);
 	i += 2;
     }
     return 0;
@@ -153,12 +155,12 @@ write_part(unsigned char *pstart, struct partinfo *part, const unsigned char *di
      * needs to be reproducible */
     seed = 0x49799a933a97c4c2ULL;
     seed = (seed << (part->num&63)) | (seed >> (64-(part->num&63)));
-    seed ^= (part->partoff>>20) + part->num;
+    seed ^= part->startlba + part->num;
     put_le64(base + 16, ((uint64_t)get_le64(diskguid))^((uint64_t)get_le64(base))^seed);
     put_le64(base + 24, ((uint64_t)get_le64(diskguid+8))^((uint64_t)get_le64(base+8))^seed);
 
-    setf64(base, partfirst, part->partoff>>9);
-    setf64(base, partlast, ((part->partoff + part->partsz)>>9)-1);
+    setf64(base, partfirst, part->startlba);
+    setf64(base, partlast, part->startlba + part->nsectors - 1);
 
     /* for now, no attribute flags or partition name */
     memset(base + 48, 0, GPT_PART_SIZE - 48);
@@ -242,22 +244,19 @@ crc32(const unsigned char *mem, size_t sz)
 }
 
 static void
-protect_mbr(unsigned char *mem, off_t disksize)
+protect_mbr(unsigned char *mem, int64_t nlbas)
 {
     struct partinfo part = {0};
-    int64_t maxsize;
 
-    maxsize = 512ULL * ((1ULL << 32) - 1);
-    if (disksize > maxsize)
-	disksize = maxsize;
-
+    if (nlbas > 0xffffffff)
+	nlbas = 0xffffffff;
     part.num = 1;
     part.kind = "?";
     part.dc = 0xee;
-    part.partoff = 512;
-    part.partsz = disksize - 512; /* first sector is used, obviously */
+    part.startlba = 1;
+    part.nsectors = nlbas - 1;
     if (mbr_write_parts(mem, &part))
-	warnf("couldn't write protective mbr (size = %llu)\n", (unsigned long long)disksize);
+	warnf("couldn't write protective mbr (sectors = %lli)\n", (long long)nlbas);
 }
 
 /* orig should point to lba 1 (an existing GPT)
@@ -266,8 +265,9 @@ protect_mbr(unsigned char *mem, off_t disksize)
 static void
 backup_gpt(const unsigned char *orig, unsigned char *bup, int64_t lastlba)
 {
-    unsigned char *base, *partstart;
+    unsigned char *base;
 
+    /* very last sector is backup GPT */
     base = bup + (GPT_RESERVE - 512);
 
     /* copy the original gpt header verbatim */
@@ -279,20 +279,19 @@ backup_gpt(const unsigned char *orig, unsigned char *bup, int64_t lastlba)
     setf32(base, hdrcrc, 0);
     setf64(base, thislba, lastlba);
     setf64(base, otherlba, 1);
-    setf64(base, partstart, lastlba - 32);
+    setf64(base, partstart, lastlba + 1 - GPT_RESERVE_LBAS);
     setf32(base, hdrcrc, crc32(base, GPT_HEADER_SIZE));
 
     if (getf64(orig, otherlba) != lastlba)
-	warnf("gpt: warning: GPT doesn't have backup at LBA %llu\n", (unsigned long long)lastlba);
+	warnf("gpt: warning: GPT doesn't have backup at LBA %lli\n", (long long)lastlba);
 
     /* duplicate partitions */
     assert(getf32(orig, nparts) <= GPT_NUM_PARTS);
-    partstart = bup + (GPT_RESERVE - 33 * 512);
-    memcpy(partstart, orig + 512, GPT_PART_SIZE * getf32(orig, nparts));
+    memcpy(bup, orig + 512, GPT_PART_SIZE * getf32(orig, nparts));
 }
 
 int
-gpt_write_parts(int fd, struct partinfo *parts, const char *diskguid, off_t disksize)
+gpt_write_parts(int fd, struct partinfo *parts, const char *diskguid, int64_t sectors)
 {
     unsigned char header[GPT_RESERVE + 512];
     unsigned char trailer[GPT_RESERVE];
@@ -301,14 +300,12 @@ gpt_write_parts(int fd, struct partinfo *parts, const char *diskguid, off_t disk
     int64_t lastlba;
     int i;
 
-    /* disks must be sector-aligned */
-    disksize = aligndown(disksize, 9);
-    lastlba = (disksize>>9)-1;
+    lastlba = sectors-1;
 
     /* 2048 is the first 1M-aligned lba, and we need a 34-lba trailer */
     if (lastlba <= 2048+GPT_RESERVE_LBAS) {
-	warnf("gpt: disk too small (%llu) to retain sane partition alignment\n", disksize);
-	return -ENOSPC;
+	warnf("gpt: disk too small (%lli) to retain sane partition alignment\n", (long long)sectors);
+	return rc(ENOSPC);
     }
 
     memset(header, 0, sizeof(header));
@@ -322,12 +319,15 @@ gpt_write_parts(int fd, struct partinfo *parts, const char *diskguid, off_t disk
     setf32(base, hdrsize, GPT_HEADER_SIZE);
     setf64(base, thislba, 1);
     setf64(base, otherlba, lastlba);
-    setf64(base, firstlba, 2048); /* always reserve 1M to retain filesystem alignment */
+    /* first usable lba: aligned to no less than 1M: */
+    setf64(base, firstlba, 2048);
+    /* last usable lba: location of back-up GPT minus
+     * the size of the backup table */
     setf64(base, lastlba, lastlba - GPT_RESERVE_LBAS);
 
     if (encode_guid(base + 56, diskguid)) {
 	warnf("gpt: bad disk guid %s\n", diskguid);
-	return -EINVAL;
+	return rc(EINVAL);
     }
 
     setf64(base, partstart, 2); /* partitions are in lba 2-33*/
@@ -341,168 +341,179 @@ gpt_write_parts(int fd, struct partinfo *parts, const char *diskguid, off_t disk
 	    continue;
 	if (head->num != ++i) {
 	    warnf("gpt: expected part %d but got part %d\n", i, head->num);
-	    return -EINVAL;
+	    return rc(EINVAL);
 	}
 	if (head->num > GPT_NUM_PARTS) {
 	    warnf("gpt: partition number %d above highest supported number %d\n", head->num, GPT_NUM_PARTS);
-	    return -EOPNOTSUPP;
+	    return rc(EOPNOTSUPP);
 	}
-	if (head->partoff < (2048 << 9)) {
-	    warnf("gpt part %d starts at %llu (below first usable offset %llu)\n",
-		  head->num, (unsigned long long)head->partoff, (unsigned long long)(2048 << 9));
-	    return -EINVAL;
+	/* TODO: maybe relax this constraint? */
+	if (head->startlba < 2048) {
+	    warnf("gpt part %d starts at %lli (below first usable LBA %lli)\n",
+		  head->num, (long long)head->startlba, 2048);
+	    return rc(EINVAL);
 	}
 	/* there are filesystem compatibility problems with
 	 * unaligned filesystems; try to encourage 1MB+ alignment: */
-	if (head->partoff & ((1UL<<20)-1))
+	if (head->startlba & 2047)
 	    warnf("warning: gpt part %d not aligned to 1MB boundary\n", head->num);
+	if (head->startlba + head->nsectors > sectors - GPT_RESERVE_LBAS) {
+	    warnf("gpt: part %d ends at LBA %lli, which overflows usable space\n",
+		  head->num, (long long)head->startlba+head->nsectors);
+	    return rc(EINVAL);
+	}
 
 	if (write_part(base + 512, head, base + 56) < 0) {
 	    warnf("bad partition spec %d\n", head->num);
-	    return -EINVAL;
+	    return rc(EINVAL);
 	}
     }
 
     /* compute crc of partition entries, then crc of header */    
     setf32(base, partcrc, crc32(base + 512, GPT_PART_SIZE * GPT_NUM_PARTS));
-    setf32(base, hdrcrc, crc32(base, 92));
+    setf32(base, hdrcrc, crc32(base, GPT_HEADER_SIZE));
 
-    protect_mbr(header, disksize);
+    protect_mbr(header, sectors);
     backup_gpt(base, trailer, lastlba);
 
     if (pwrite(fd, header, sizeof(header), 0) != sizeof(header))
-	err(1, "pwrite");
-    if (pwrite(fd, trailer, sizeof(trailer), disksize - GPT_RESERVE) != sizeof(trailer))
-	err(1, "pwrite");
+	return -1;
+    if (pwrite(fd, trailer, sizeof(trailer), (sectors-GPT_RESERVE_LBAS)<<9) != sizeof(trailer))
+	return -1;
     return 0;
 }
 
 static const unsigned char zeroguid[16];
 
 int
-gpt_add_lastpart(int fd, int num, off_t disksize)
+gpt_add_lastpart(int fd, int num, int64_t disksectors)
 {
     unsigned char header[GPT_RESERVE + 512];
     unsigned char trailer[GPT_RESERVE];
     unsigned char *partbase, *gpt, *p;
     struct partinfo spec = {0};
     uint32_t c, c2, np;
-    off_t start, width;
-    int64_t lba, off, blba;
+    int64_t lba, blba, first, last;
     int i, pfree;
 
-    disksize = aligndown(disksize, 9);
     if (pread(fd, header, sizeof(header), 0) != sizeof(header))
-	err(1, "pread");
+	return -1;
 
     memset(trailer, 0, sizeof(trailer));
-    blba = (disksize >> 9)-1;
+    blba = disksectors-1;
 
     gpt = header + 512;
-    if (memcmp(gpt, "EFI PART", 8))
-	return -EINVAL;
-    if (getf32(gpt, hdrsize) != 92) {
+    if (memcmp(gpt, "EFI PART", 8)) {
+	dprintf(2, "no GPT label present\n");
+	return rc(EINVAL);
+    }
+    if (getf32(gpt, hdrsize) != GPT_HEADER_SIZE) {
 	warnf("gpt: header size %lu?\n", (unsigned long)getf32(gpt, hdrsize));
-	return -EINVAL;
+	return rc(EINVAL);
     }
     c = getf32(gpt, hdrcrc);
     setf32(gpt, hdrcrc, 0);
-    c2 = crc32(gpt, 92);
+    c2 = crc32(gpt, GPT_HEADER_SIZE);
     setf32(gpt, hdrcrc, c);
     if (c != c2) {
 	warnf("gpt: primary header has invalid crc %lxu\n", c);
 	/* TODO: handle backup */
-	return -EINVAL;
+	return rc(EINVAL);
     }
     /* TODO: the spec says sizes could be 256, 512, ... but no one appears to do that */
     if (getf32(gpt, psize) != GPT_PART_SIZE) {
 	warnf("gpt: don't know how to parse partition entries of size %lu\n", (unsigned long)getf32(gpt, psize));
-	return -EINVAL;
+	return rc(EINVAL);
     }
     np = getf32(gpt, nparts);
     if (np == 0) {
 	warnf("gpt: partition entry array is size %u\n", np);
-	return -EINVAL;
+	return rc(EINVAL);
     }
     if (np > 128) {
-	warnf("gpt: not prepared for %d partition entries", np);
-	return -EOPNOTSUPP;
+	warnf("gpt: not prepared for %ud partition entries", np);
+	return rc(EOPNOTSUPP);
     }
+    if (np < 128)
+	warnf("gpt: warning: %ud partition entries is not standards-compliant\n", np);
     lba = getf64(gpt, partstart); 
     if (lba != 2) {
-	warnf("gpt: primary GPT header has partitions starting at %ll?\n", lba);
-	return -EINVAL;
+	warnf("gpt: primary GPT header has partitions starting at %lli?\n", lba);
+	return rc(EINVAL);
     }
-    lba = getf64(gpt, firstlba);
-    if (lba < 2 + (alignup(np*GPT_PART_SIZE, 9)>>9)) {
+    lba = getf64(gpt, firstlba) - lba;
+    if (lba < 32) {
 	warnf("gpt: partition table entries (%lu) bleed into first usable lba\n", np);
-	return -EINVAL;
+	return rc(EINVAL);
     }
 
     partbase = gpt + 512;
     if (crc32(partbase, np*GPT_PART_SIZE) != getf32(gpt, partcrc)) {
 	warnf("gpt: crc error (%xu) for partitions\n", getf32(gpt, partcrc));
-	return -EINVAL;
+	return rc(EINVAL);
     }
 
     /* now figure out where we can insert the last (first?) partition */
-    off = getf64(gpt, firstlba) << 9;
+    lba = getf64(gpt, firstlba);
     /* index of first unused slot after all valid partitions */
     pfree = 0;
     for (i=0; i<np; i++) {
 	p = partbase + GPT_PART_SIZE*i;
 	if (memcmp(p, zeroguid, sizeof(zeroguid)) == 0)
 	    continue;
-        start = getf64(p, partfirst) << 9;
-	width = ((getf64(p, partlast)+1) << 9) - start;
-	if (width < 0 || start < 0) {
-	    warnf("gpt: part %d: strange bounds [%ll, %ll]\n", getf64(p, firstlba), getf64(p, lastlba));
-	    return -EINVAL;
+	first = getf64(p, partfirst);
+	last = getf64(p, partlast);
+	if (first < 0 || last < 0 || first > last) {
+	    warnf("gpt: part %d: strange bounds [%lli, %lli]\n", first, last);
+	    return rc(EINVAL);
 	}
-	if (start < off || start+width < off) {
-	    warnf("gpt: part %d: overlapping / not in disk order? (%llu, %llu)\n",
-		  i+1, (unsigned long long)start, (unsigned long long)width);
-	    return -EINVAL;
+	if (first < lba || last+1 > disksectors) {
+	    warnf("gpt: part %d: overlapping / not in disk order? (%lli, %lli)\n",
+		  i+1, (long long)first, (long long)last);
+	    return rc(EINVAL);
 	}
 	pfree = i+1;
-	off = start+width;
+	lba = last+1;
     }
     if (num > 0 && pfree != num-1) {
 	warnf("gpt: found available part %d; not equal to expected part %d\n", pfree+1, num);
-	return -ENXIO;
+	return rc(ENXIO);
     }
     if (pfree >= np) {
 	warnf("gpt: all partition entries (%d) already used\n", np);
-	return -ENXIO;
+	return rc(ENXIO);
     }
-    off = alignup(off, 20);
-    if (off >= disksize || disksize-off-GPT_RESERVE < (1UL<<20))
-	return -ENOSPC;
-    spec.partoff = off;
-    spec.partsz = disksize - off - GPT_RESERVE;
+    lba = alignup(lba, 11);
+    if (disksectors-lba <= GPT_RESERVE_LBAS)
+	return rc(ENOSPC);
+
+    spec.startlba = lba;
+    spec.nsectors = disksectors - lba - GPT_RESERVE_LBAS;
     spec.kind = "L";
     spec.num = pfree+1;
+    if (spec.nsectors < 2048)
+	warnf("gpt: warning: last partition is very small (%lli sectors)\n", spec.nsectors);
 
     /* now actually do the modification */
     if (getf64(gpt, otherlba) != blba)
-	warnf("gpt: note: moving backup GPT LBA %ll -> %ll\n", getf64(gpt, otherlba), blba);
+	warnf("gpt: note: moving backup GPT LBA %lli -> %lli\n", getf64(gpt, otherlba), blba);
     else
-	warnf("gpt: note: backup GPT at LBA %ll will be overwritten\n", blba);
+	warnf("gpt: note: backup GPT at LBA %lli will be overwritten\n", blba);
 
     setf64(gpt, otherlba, blba);
     write_part(partbase, &spec, gpt + 56);
     setf32(gpt, hdrcrc, 0);
     setf32(gpt, partcrc, crc32(partbase, GPT_PART_SIZE*np));
-    setf32(gpt, hdrcrc, crc32(gpt, 92));
+    setf32(gpt, hdrcrc, crc32(gpt, GPT_HEADER_SIZE));
     backup_gpt(gpt, trailer, blba);
 
     /* only update PMBR if one is actually present */
     if (header[510] == 0x55 && header[511] == 0xaa)
-	protect_mbr(header, disksize);
+	protect_mbr(header, disksectors);
 
     if (pwrite(fd, header, sizeof(header), 0) != sizeof(header))
-	err(1, "pwrite");
-    if (pwrite(fd, trailer, sizeof(trailer), disksize - GPT_RESERVE) != sizeof(trailer))
-	err(1, "pwrite");
+	return -1;
+    if (pwrite(fd, trailer, sizeof(trailer), (disksectors<<9)-sizeof(trailer)) != sizeof(trailer))
+	return -1;
     return 0;
 }
