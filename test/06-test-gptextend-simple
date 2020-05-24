@@ -1,0 +1,64 @@
+#!/bin/sh -e
+img=$(mktemp -u img.XXXXXX)
+rfs=$(mktemp -u rfs.XXXXXX)
+
+truncate -s 8M $rfs
+# create 2M of data at offset +1M inside an 8M sparse image
+dd if=/dev/urandom of=$rfs bs=1M seek=1 count=2 conv=notrunc
+
+uuid="B3FA0702-EBBE-D74F-B1F2-0FA70174FD3D"
+execlineb -Pc "./gptimage -u $uuid $img { $rfs L }"
+
+imgget() {
+	 sfdisk -J "$img" | jq -r "$1"
+}
+
+parts=$(imgget ".partitiontable.partitions | length")
+[ $parts -eq 1 ] || {
+  echo "got $parts parts?" >&2
+  exit 1
+}
+
+p1off=$(imgget ".partitiontable.partitions[0].start")
+[ $p1off -eq 2048 ] || {
+    echo "start sector of p1 is $p1off ?" >&2
+    exit 1
+}
+
+truncate -s 16M $img
+./gptextend -n2 $img
+
+parts=$(imgget ".partitiontable.partitions | length")
+[ $parts -eq 2 ] || {
+    echo "got $parts parts after dosextend?" >&2
+    exit 1
+}
+
+# p1 is 8M and should start at +1M;
+# expect p2 to start at +9M, which is sector 18432
+start=$(imgget ".partitiontable.partitions[1].start")
+[ $start -eq 18432 ] || {
+    echo "p2 doesn't starts at $start ?" >&2
+    exit 1
+}
+
+label=$(imgget ".partitiontable.id")
+[ $label = $uuid ] || {
+    echo "partition table id is $label instead of $uuid ?" >&2
+    exit 1
+}
+
+# test that a second gptextend fails
+./gptextend $img 2>/dev/null && {
+    echo "second dosextend succeeded?" >&2;
+    exit 1;
+}
+
+# test that the root filesystem isn't corrupted
+(dd if=$img bs=1M skip=1 count=8 | cmp -s $rfs) || {
+    echo "data from $rfs was corrupted" >&2
+    exit 1
+}
+
+rm $img
+rm $rfs

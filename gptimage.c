@@ -14,6 +14,7 @@
 #include <assert.h>
 
 #include "filesize.h"
+#include "gpt.h"
 #include "mbr.h"
 #include "part.h"
 
@@ -35,73 +36,14 @@
 static_assert(sizeof(loff_t) == sizeof(off_t));
 #endif
 
-static int
-verbose = 0;
-
-static inline off_t
-alignup(off_t off, unsigned bits)
-{
-    off_t mask = (1ULL << bits)-1;
-    return (off + mask) & (~mask);
-}
-
-/* write the description of 'part' (for sfdisk) to 'fd'*/
-static int
-partln(int fd, struct partinfo *part)
-{
-    /* always suffix sizes with KiB so that they are invariant w.r.t. sector size */
-    const char *boot = strcmp(part->kind, "U") ? "-" : "*";
-    return dprintf(fd, "%lluKiB %lluKiB %s %s\n",
-		   (unsigned long long)part->partoff >> 10,
-		   (unsigned long long)part->partsz >> 10,
-		   part->kind,
-		   boot);
-}
+static int verbose = 0;
 
 static void
-sfdisk(char* disk, const char *uuid, struct partinfo *partlist)
-{
-    char *argv[] = {"sfdisk", disk, "--no-tell-kernel", "--no-reread", NULL};
-    int pipefd[2];
-    pid_t child;
-    int status;
- 
-    please(pipe(pipefd));
-    switch ((child = fork())) {
-    case 0:
-	please(close(pipefd[1]));
-	please(dup2(pipefd[0], 0));
-	if (pipefd[0])
-	    please(close(pipefd[0]));
-	please(execvp(argv[0], argv));
-    default:
-	break;
-    }
-    please(child);
-    please(close(pipefd[0]));
-    please(dprintf(pipefd[1], "label: %s\n", "gpt"));
-    please(dprintf(pipefd[1], "label-id: %s\n", uuid));
-    while (partlist) {
-	please(partln(pipefd[1], partlist));
-	if (verbose)
-	    partln(1, partlist);
-	partlist = partlist->next;
-    }
-    please(close(pipefd[1]));
-    if (waitpid(child, &status, 0) != child)
-	err(1, "waitpid(%d)", child);
-    if (!WIFEXITED(status)) {
-	dprintf(2, "sfdisk exited %d; exiting\n", WEXITSTATUS(status));
-	_exit(WEXITSTATUS(status));
-    }
-}
-
-static void
-dosfmt(const char *disk, const char *label, struct partinfo *lst)
+dosfmt(int fd, const char *label, struct partinfo *lst)
 {
     unsigned char mbr[512];
     unsigned long sig;
-    int fd, e;
+    int e;
 
     sig = strtoul(label, NULL, 0);
     if (errno)
@@ -111,7 +53,6 @@ dosfmt(const char *disk, const char *label, struct partinfo *lst)
 
     memset(mbr, 0, sizeof(mbr));
     put_le32(mbr + 440, sig);
-    please(fd = open(disk, O_WRONLY|O_CLOEXEC));
     if ((e = mbr_write_parts(mbr, lst))) {
 	errno = -e;
 	err(1, "assembling dos parts");
@@ -119,6 +60,16 @@ dosfmt(const char *disk, const char *label, struct partinfo *lst)
     /* TODO: mbr[...] = label; */
     if (pwrite(fd, mbr, sizeof(mbr), 0) != 512)
 	err(1, "writing mbr");
+}
+
+static void
+gptfmt(int fd, const char *uuid, struct partinfo *lst, off_t disksize)
+{
+    int rc = gpt_write_parts(fd, lst, uuid, disksize);
+    if (rc < 0) {
+	errno = rc;
+	err(1, "creating GPT");
+    }
 }
 
 const char *usagestr = \
@@ -157,16 +108,23 @@ hsize(off_t amt, char suff)
 static off_t
 parse_size(const char *text)
 {
-    unsigned long long out;
+    long long out;
     char *end;
+    off_t up;
 
-    out = strtoull(text, &end, 0);
+    out = strtoll(text, &end, 0);
     if (errno)
 	err(1, "strtoull(%s)", text);
+    if (out < 0)
+	errx(1, "negative size? %ll", out);
     if (!*end)
-	return out;
-    if (*end && !*(end+1))
-	return hsize(out, *end);
+	return (off_t)out;
+    if (*end && !*(end+1)) {
+	up = hsize((off_t)out, *end);
+	if (up < out)
+	    errx(1, "expression %s overflows long long", text);
+	return up;
+    }
     errx(1, "couldn't parse %s", text);
 }
 
@@ -202,7 +160,7 @@ main(int argc, char * const* argv)
 {
     char *diskname, *contents, *kind, *uuid;
     struct partinfo *head, *tail, *part;
-    off_t srcsz, dstsize, off, width, align;
+    off_t srcsz, dstsize, off, width, align, trailer;
     int srcfd, dstfd, partnum;
     char optc;
     bool dos;
@@ -245,6 +203,9 @@ main(int argc, char * const* argv)
     if (!uuid)
 	uuid = dos ? "0x77777777" : "3782C3EE-1C16-F042-82A8-D6A40FB7CFAD";
 
+    /* we may need to reserve space at the end of the disk */
+    trailer = dos ? 0 : GPT_RESERVE;
+
     argc -= optind;
     argv += optind;
     if (argc < 2) usage();
@@ -269,11 +230,11 @@ main(int argc, char * const* argv)
 	    srcfd = -1;
 	    if (!dstsize)
 		errx(1, "cannot use wildcard part size without -s <size> flag");
-	    if (off >= dstsize)
-		errx(1, "not enough space for wildcard part");
-	    width = srcsz = dstsize - off;
+	    if (off >= dstsize-trailer)
+		errx(1, "no space remaining for wildcard partition");
+	    width = srcsz = dstsize - off - trailer;
 	} else if (contents[0] == '+') {
-	    /* empty partition; fixed size */	   
+	    /* empty partition; fixed size */
 	    srcfd = -1;
 	    width = srcsz = alignup(parse_size(++contents), align);
 	} else {
@@ -302,7 +263,14 @@ main(int argc, char * const* argv)
 	usage();
 
     /* now we know the full size of the image: */
+    if (!dos)
+	off += GPT_RESERVE;
+    
     off = alignup(off, align);
+    /* XXX will likely be optimized away unless compiled with -fwrapv */
+    if (off < 0)
+	errx(1, "size (off_t) overflow");
+
     if (dstsize && off > dstsize)
 	errx(1, "images do not fit in size %llu", (unsigned long long)dstsize);
 
@@ -310,16 +278,15 @@ main(int argc, char * const* argv)
 
     /* ... finally, do the actual work: */
     if (dos)
-	dosfmt(diskname, uuid, head);
+	dosfmt(dstfd, uuid, head);
     else
-	sfdisk(diskname, uuid, head);
+	gptfmt(dstfd, uuid, head, dstsize ? dstsize : off);
     while (head) {
 	if (head->srcfd >= 0)
 	    setpart(dstfd, head->srcfd, head->partoff, head->srcsz);
 	head = head->next;
     }
     free_parts(&head);
-    please(fsync(dstfd));
 
     if (!argc)
 	return 0;

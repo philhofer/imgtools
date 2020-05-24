@@ -9,6 +9,19 @@
 #include <linux/fs.h>
 
 static inline off_t
+alignup(off_t off, unsigned bits)
+{
+    off_t mask = (1ULL << bits)-1;
+    return (off + mask) & (~mask);
+}
+
+static inline off_t
+aligndown(off_t off, unsigned bits)
+{
+	return off & ~((1ULL << bits) - 1);
+}
+
+static inline off_t
 fgetsize(int fd)
 {
     struct stat st;

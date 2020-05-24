@@ -20,13 +20,6 @@ usage(void)
     _exit(1);
 }
 
-static off_t
-alignup(off_t sz, off_t bits)
-{
-    off_t mask = (1LL<<bits)-1;
-    return (sz + mask) & (~mask);
-}
-
 int
 main(int argc, char **argv)
 {

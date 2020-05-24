@@ -2,19 +2,23 @@ CC ?= gcc
 CFLAGS ?= -Wall -Werror -pipe -O1 -g -ffunction-sections -fdata-sections
 LDFLAGS ?= -static-pie -g -Wl,--gc-sections
 
+# you should probably not override these:
+EXTRA_CFLAGS = -fwrapv
+
 REPO := imgtools
-TOOLS := gptimage alignsize dosextend
-VERSION ?= 0.2.3
+TOOLS := gptimage alignsize dosextend gptextend
+VERSION ?= 0.2.4
 
 .PHONY: all clean release test
 all: $(TOOLS)
 
-gptimage: gptimage.o mbr.o part.o
+gptimage: gptimage.o gpt.o mbr.o part.o
 alignsize: alignsize.o
 dosextend: dosextend.o mbr.o part.o
+gptextend: gptextend.o mbr.o gpt.o part.o
 
 %.o: %.c $(wildcard *.h)
-	$(CC) -c $(CFLAGS) $< -o $@
+	$(CC) -c $(CFLAGS) $(EXTRA_CFLAGS) $< -o $@
 
 %: %.o
 	$(CC) $(LDFLAGS) $^ -o $@

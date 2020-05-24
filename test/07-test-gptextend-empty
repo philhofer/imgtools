@@ -1,0 +1,48 @@
+#!/bin/sh -e
+img=$(mktemp -u img.XXXXXX)
+
+uuid="B3FA0702-EBBE-D74F-B1F2-0FA70174FD3D"
+execlineb -Pc "./gptimage -s 10M -u $uuid $img { }"
+
+imgget() {
+	 sfdisk -J "$img" | jq -r "$1"
+}
+
+sfdisk --dump "$img" &2>/dev/null || {
+    echo "sfdisk --dump on empty gpt failed"
+    exit 1
+}
+
+./gptextend $img
+
+parts=$(imgget ".partitiontable.partitions | length")
+[ $parts -eq 1 ] || {
+    echo "got $parts partitions after extension?" >&2
+    exit 1
+}
+
+p1off=$(imgget ".partitiontable.partitions[0].start")
+[ $p1off -eq 2048 ] || {
+    echo "start sector of p1 is $p1off ?" >&2
+    exit 1
+}
+
+fullsize=$(imgget ".partitiontable.partitions[0] | (.start+.size+33)*512")
+[ $fullsize -eq 10485760 ] || {
+    echo "p1 start + size + slack is $fullsize"  >&2
+    exit 1
+}
+	   
+label=$(imgget ".partitiontable.id")
+[ $label = $uuid ] || {
+    echo "partition table id is $label instead of $uuid ?" >&2
+    exit 1
+}
+
+# test that a second gptextend fails
+./gptextend $img 2>/dev/null && {
+    echo "second dosextend succeeded?" >&2;
+    exit 1;
+}
+
+rm $img
